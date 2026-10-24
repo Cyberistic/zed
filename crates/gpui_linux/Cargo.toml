@@ -61,6 +61,11 @@ gpui.workspace = true
 gpui_util.workspace = true
 gpui_wgpu = { workspace = true, optional = true, features = ["font-kit"] }
 http_client.workspace = true
+image.workspace = true
+ksni = { version = "0.3.7", default-features = false, features = [
+    "async-io",
+    "blocking",
+] }
 libc.workspace = true
 log.workspace = true
 parking_lot.workspace = true

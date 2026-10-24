@@ -15,8 +15,8 @@ use std::{
 use anyhow::{Context as _, Result, anyhow};
 use derive_more::{Deref, DerefMut};
 use futures::{
-    Future, FutureExt,
-    channel::oneshot,
+    Future, FutureExt, StreamExt,
+    channel::{mpsc, oneshot},
     future::{LocalBoxFuture, Shared},
 };
 use itertools::Itertools;
@@ -56,8 +56,8 @@ use crate::{
     PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
     ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer,
     SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
-    ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
-    WindowInvalidator,
+    ThermalState, TrayEvent, TrayHandle, TrayOptions, Window, WindowAppearance, WindowButtonLayout,
+    WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     hash, init_app_menus,
 };
@@ -773,6 +773,9 @@ pub struct App {
     pending_updates: usize,
     quit_mode: QuitMode,
     quitting: bool,
+    /// Drain for the tray event channel; replaced (and so cancelled) whenever
+    /// [`App::on_tray_event`] registers a new handler.
+    tray_event_task: RefCell<Option<Task<()>>>,
 
     // We need to ensure the leak detector drops last, after all tasks, callbacks and things have been dropped.
     // Otherwise it may report false positives.
@@ -865,6 +868,7 @@ impl App {
                 inspector_element_registry: InspectorElementRegistry::default(),
                 quit_mode: QuitMode::default(),
                 quitting: false,
+                tray_event_task: RefCell::new(None),
                 cursor_hide_mode: CursorHideMode::default(),
                 reduce_motion: false,
                 synced_animation_epoch,
@@ -1552,6 +1556,57 @@ impl App {
                     callback(response, &mut app.borrow_mut());
                 }
             }));
+    }
+
+    /// Creates an item in the operating system's tray: an icon or a short title
+    /// that lives outside of the application's windows.
+    ///
+    /// Returns `None` on platforms without tray support; only macOS implements
+    /// it today. Dropping the returned handle removes the item.
+    pub fn create_tray(&self, options: TrayOptions) -> Option<TrayHandle> {
+        self.platform.create_tray(options).map(TrayHandle::new)
+    }
+
+    /// Registers the handler invoked when one of the application's tray items
+    /// is clicked or one of its menu items is chosen.
+    ///
+    /// The handler runs on the foreground, outside the native callback that
+    /// produced the event: AppKit's menu tracking and the other platforms'
+    /// message loops leave the [`App`] mid-turn, so backends only push events
+    /// into a channel and this handler is what drains it.
+    ///
+    /// Subsequent registrations replace the handler and cancel the previous
+    /// drain.
+    pub fn on_tray_event<F>(&self, mut callback: F)
+    where
+        F: 'static + FnMut(TrayEvent, &mut App),
+    {
+        let (sender, mut receiver) = mpsc::unbounded();
+        self.platform.set_tray_event_sender(sender);
+
+        let this = self.this.clone();
+        let task = self.foreground_executor.spawn(async move {
+            while let Some(event) = receiver.next().await {
+                let Some(app) = this.upgrade() else { break };
+                app.borrow_mut().update(|cx| callback(event, cx));
+            }
+        });
+        // Dropping the previous task cancels its drain.
+        *self.tray_event_task.borrow_mut() = Some(task);
+    }
+
+    /// Keeps the process running when the last window closes.
+    ///
+    /// The companion of [`App::create_tray`]: a tray app stays usable with no
+    /// windows open, so it usually wants `keep_running(true)`. Passing `false`
+    /// restores the platform default ([`QuitMode::Explicit`] on macOS and
+    /// [`QuitMode::LastWindowClosed`] elsewhere).
+    pub fn keep_running(&mut self, keep_running: bool) {
+        self.quit_mode = if keep_running {
+            QuitMode::Explicit
+        } else {
+            QuitMode::Default
+        };
     }
 
     /// Returns the full pathname of the current app bundle.
@@ -3111,7 +3166,9 @@ mod test {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
-    use crate::{AppContext, Context, Empty, IntoElement, Render, TestAppContext, Window};
+    use crate::{
+        AppContext, Context, Empty, IntoElement, QuitMode, Render, TestAppContext, Window,
+    };
 
     struct RenderCounter(Rc<Cell<usize>>);
 
@@ -3120,6 +3177,27 @@ mod test {
             self.0.set(self.0.get() + 1);
             Empty
         }
+    }
+
+    #[gpui::test]
+    fn keep_running_survives_the_last_window_closing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_quit_mode(QuitMode::LastWindowClosed);
+            cx.keep_running(true);
+        });
+
+        cx.add_empty_window()
+            .update(|window, _| window.remove_window());
+        assert!(!cx.quit_requested());
+    }
+
+    #[gpui::test]
+    fn closing_the_last_window_quits_without_keep_running(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_quit_mode(QuitMode::LastWindowClosed));
+
+        cx.add_empty_window()
+            .update(|window, _| window.remove_window());
+        assert!(cx.quit_requested());
     }
 
     #[gpui::test]

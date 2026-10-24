@@ -11,6 +11,7 @@ mod events;
 mod keyboard;
 mod pasteboard;
 mod system_notifications;
+mod tray;
 
 #[cfg(feature = "screen-capture")]
 mod screen_capture;
