@@ -35,6 +35,7 @@ pub(crate) struct TestPlatform {
     pub opened_url: RefCell<Option<String>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     tray_event_sender: RefCell<Option<UnboundedSender<TrayEvent>>>,
+    dock_badge: RefCell<Option<String>>,
     quit_requested: std::cell::Cell<bool>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
@@ -149,6 +150,7 @@ impl TestPlatform {
             opened_url: Default::default(),
             system_notifications: Default::default(),
             tray_event_sender: Default::default(),
+            dock_badge: Default::default(),
             quit_requested: std::cell::Cell::new(false),
             text_system,
             headless_renderer_factory,
@@ -161,6 +163,10 @@ impl TestPlatform {
 
     pub(crate) fn quit_requested(&self) -> bool {
         self.quit_requested.get()
+    }
+
+    pub(crate) fn dock_badge(&self) -> Option<String> {
+        self.dock_badge.borrow().clone()
     }
 
     pub(crate) fn simulate_new_path_selection(
@@ -518,6 +524,10 @@ impl Platform for TestPlatform {
 
     fn set_tray_event_sender(&self, sender: UnboundedSender<TrayEvent>) {
         *self.tray_event_sender.borrow_mut() = Some(sender);
+    }
+
+    fn set_dock_badge(&self, label: Option<&str>) {
+        *self.dock_badge.borrow_mut() = label.map(str::to_string);
     }
 
     fn set_menus(&self, _menus: Vec<crate::Menu>, _keymap: &Keymap) {}

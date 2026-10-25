@@ -144,6 +144,12 @@ pub trait Platform: 'static {
     fn hide_other_apps(&self);
     fn unhide_other_apps(&self);
 
+    /// Sets the label drawn on the application's dock icon, or clears it.
+    ///
+    /// Only macOS has a dock icon to badge; Windows and Linux keep the default
+    /// no-op, since neither has a badge on a taskbar or tray icon.
+    fn set_dock_badge(&self, _label: Option<&str>) {}
+
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn active_window(&self) -> Option<AnyWindowHandle>;

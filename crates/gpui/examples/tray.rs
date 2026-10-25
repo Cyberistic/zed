@@ -2,7 +2,9 @@
 //!
 //! Closing the window keeps the process, and the tray item, alive. Use the
 //! item's Quit entry to exit; its Remove menu entry leaves an item with no
-//! menu, so a click reports an event on its own.
+//! menu, so a click reports an event on its own. The badge entries set and
+//! clear the dock icon's badge, which needs a dock icon: a menu-bar-only app
+//! has none.
 
 use gpui::{
     App, Bounds, Context, Render, TrayEvent, TrayMenuItem, TrayOptions, Window, WindowBounds,
@@ -46,6 +48,18 @@ fn menu() -> Vec<TrayMenuItem> {
             checked: false,
         },
         TrayMenuItem {
+            id: "badge".into(),
+            label: "Badge the dock icon".into(),
+            enabled: true,
+            checked: false,
+        },
+        TrayMenuItem {
+            id: "clear-badge".into(),
+            label: "Clear the dock badge".into(),
+            enabled: true,
+            checked: false,
+        },
+        TrayMenuItem {
             id: "quit".into(),
             label: "Quit".into(),
             enabled: true,
@@ -80,6 +94,14 @@ fn main() {
             TrayEvent::MenuItem(id) if id.as_str() == "remove-menu" => {
                 println!("event: menu item `remove-menu`");
                 tray.set_menu(Vec::new());
+            }
+            TrayEvent::MenuItem(id) if id.as_str() == "badge" => {
+                println!("event: menu item `badge`");
+                cx.set_dock_badge(Some("3"));
+            }
+            TrayEvent::MenuItem(id) if id.as_str() == "clear-badge" => {
+                println!("event: menu item `clear-badge`");
+                cx.set_dock_badge(None);
             }
             TrayEvent::MenuItem(id) => println!("event: menu item `{id}`"),
         });

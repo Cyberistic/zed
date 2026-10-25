@@ -229,6 +229,12 @@ impl TestAppContext {
         self.test_platform.quit_requested()
     }
 
+    /// The dock badge the application last set on the platform.
+    #[cfg(test)]
+    pub(crate) fn dock_badge(&self) -> Option<String> {
+        self.test_platform.dock_badge()
+    }
+
     /// Adds a new window. The Window will always be backed by a `TestWindow` which
     /// can be retrieved with `self.test_window(handle)`
     pub fn add_window<F, V>(&mut self, build_window: F) -> WindowHandle<V>
