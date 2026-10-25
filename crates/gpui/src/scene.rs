@@ -316,10 +316,21 @@ impl Primitive {
             Primitive::Shadow(mut shadow) => {
                 shadow.bounds = transform_bounds(shadow.bounds, transform);
                 shadow.element_bounds = transform_bounds(shadow.element_bounds, transform);
+                if let Some(scale) = transform.uniform_scale() {
+                    shadow.blur_radius = ScaledPixels(shadow.blur_radius.0 * scale);
+                    shadow.corner_radii = scale_corners(shadow.corner_radii, scale);
+                    shadow.element_corner_radii = scale_corners(shadow.element_corner_radii, scale);
+                }
                 Primitive::Shadow(shadow)
             }
             Primitive::Quad(mut quad) => {
                 quad.bounds = transform_bounds(quad.bounds, transform);
+                if let Some(scale) = transform.uniform_scale() {
+                    quad.corner_radii = scale_corners(quad.corner_radii, scale);
+                    quad.border_widths = quad
+                        .border_widths
+                        .map(|width| ScaledPixels(width.0 * scale));
+                }
                 Primitive::Quad(quad)
             }
             Primitive::Path(mut path) => {
@@ -328,6 +339,9 @@ impl Primitive {
             }
             Primitive::Underline(mut underline) => {
                 underline.bounds = transform_bounds(underline.bounds, transform);
+                if let Some(scale) = transform.uniform_scale() {
+                    underline.thickness = ScaledPixels(underline.thickness.0 * scale);
+                }
                 Primitive::Underline(underline)
             }
             Primitive::MonochromeSprite(mut sprite) => {
@@ -348,6 +362,10 @@ impl Primitive {
             }
         }
     }
+}
+
+fn scale_corners(corners: Corners<ScaledPixels>, scale: f32) -> Corners<ScaledPixels> {
+    corners.map(|radius| ScaledPixels(radius.0 * scale))
 }
 
 pub(crate) fn transform_bounds(
@@ -864,6 +882,17 @@ impl TransformationMatrix {
         }
         Point::new(ScaledPixels(output[0]), ScaledPixels(output[1]))
     }
+
+    /// The scale this matrix applies, when it is a scale and a translation.
+    ///
+    /// Decorations — corner radii, border widths, shadow blur — are painted in
+    /// device pixels and have no elliptical form, so a rotated or anisotropic
+    /// matrix reports `None` and they keep their unscaled size.
+    pub(crate) fn uniform_scale(&self) -> Option<f32> {
+        let [[xx, xy], [yx, yy]] = self.rotation_scale;
+        let uniform = xy.abs() < 1e-5 && yx.abs() < 1e-5 && xx > 0.0 && (xx - yy).abs() < 1e-5;
+        uniform.then_some(xx)
+    }
 }
 
 impl Default for TransformationMatrix {
@@ -1282,6 +1311,88 @@ mod tests {
             corner_radii: Corners::default(),
             border_widths: Edges::default(),
         }
+    }
+
+    #[test]
+    fn a_uniform_transform_scales_the_quad_decorations_with_its_bounds() {
+        let Primitive::Quad(scaled) = decorated_quad().transform(scale_by(2., 2.)) else {
+            panic!("a quad must stay a quad");
+        };
+
+        assert_eq!(scaled.bounds.size, size(ScaledPixels(6.), ScaledPixels(8.)));
+        assert_eq!(scaled.corner_radii.top_left, ScaledPixels(8.));
+        assert_eq!(scaled.border_widths.top, ScaledPixels(2.));
+    }
+
+    /// A rounded, bordered box cannot become an ellipse, so an anisotropic
+    /// scale leaves the decorations at their authored size.
+    #[test]
+    fn an_anisotropic_transform_leaves_the_quad_decorations_alone() {
+        let Primitive::Quad(scaled) = decorated_quad().transform(scale_by(2., 1.)) else {
+            panic!("a quad must stay a quad");
+        };
+
+        assert_eq!(scaled.bounds.size, size(ScaledPixels(6.), ScaledPixels(4.)));
+        assert_eq!(scaled.corner_radii.top_left, ScaledPixels(4.));
+        assert_eq!(scaled.border_widths.top, ScaledPixels(1.));
+    }
+
+    #[test]
+    fn a_uniform_transform_scales_the_shadow_geometry() {
+        let Primitive::Shadow(scaled) = test_shadow().transform(scale_by(2., 2.)) else {
+            panic!("a shadow must stay a shadow");
+        };
+
+        assert_eq!(scaled.blur_radius, ScaledPixels(16.));
+        assert_eq!(scaled.corner_radii.top_left, ScaledPixels(6.));
+        assert_eq!(scaled.element_corner_radii.bottom_right, ScaledPixels(6.));
+    }
+
+    fn scale_by(x: f32, y: f32) -> TransformationMatrix {
+        TransformationMatrix::unit().scale(size(x, y))
+    }
+
+    fn decorated_quad() -> Primitive {
+        let mut quad = test_quad();
+        let corners = Corners {
+            top_left: ScaledPixels(4.),
+            top_right: ScaledPixels(4.),
+            bottom_right: ScaledPixels(4.),
+            bottom_left: ScaledPixels(4.),
+        };
+        quad.corner_radii = corners;
+        quad.border_widths = Edges {
+            top: ScaledPixels(1.),
+            right: ScaledPixels(1.),
+            bottom: ScaledPixels(1.),
+            left: ScaledPixels(1.),
+        };
+        Primitive::Quad(quad)
+    }
+
+    fn test_shadow() -> Primitive {
+        let bounds = Bounds::new(
+            point(ScaledPixels(1.), ScaledPixels(2.)),
+            size(ScaledPixels(3.), ScaledPixels(4.)),
+        );
+        let corners = Corners {
+            top_left: ScaledPixels(3.),
+            top_right: ScaledPixels(3.),
+            bottom_right: ScaledPixels(3.),
+            bottom_left: ScaledPixels(3.),
+        };
+        Primitive::Shadow(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(8.),
+            bounds,
+            corner_radii: corners,
+            content_mask: ContentMask { bounds },
+            color: Hsla::default(),
+            element_bounds: bounds,
+            element_corner_radii: corners,
+            inset: 0,
+            pad: 0,
+        })
     }
 
     fn test_sprite() -> MonochromeSprite {
