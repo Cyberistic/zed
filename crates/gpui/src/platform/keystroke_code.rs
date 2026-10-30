@@ -101,6 +101,8 @@ pub fn from_macos_key_code(key_code: u16) -> Option<&'static str> {
         0x5D => "IntlYen",
         0x5E => "IntlRo",
         0x5F => "NumpadComma",
+        0x66 => "Lang2",
+        0x68 => "Lang1",
         0x60 => "F5",
         0x61 => "F6",
         0x62 => "F7",
@@ -115,7 +117,8 @@ pub fn from_macos_key_code(key_code: u16) -> Option<&'static str> {
         0x6E => "ContextMenu",
         0x6F => "F12",
         0x71 => "F15",
-        0x72 => "Help",
+        // kVK_Help occupies the Insert position; browsers report it as Insert.
+        0x72 => "Insert",
         0x73 => "Home",
         0x74 => "PageUp",
         0x75 => "Delete",
@@ -148,8 +151,11 @@ pub fn from_windows_scancode(scan_code: u8, extended: bool) -> Option<&'static s
             0x24 => "MediaStop",
             0x2E => "AudioVolumeDown",
             0x30 => "AudioVolumeUp",
+            0x32 => "BrowserHome",
             0x35 => "NumpadDivide",
+            0x37 => "PrintScreen",
             0x38 => "AltRight",
+            0x45 => "NumLock",
             0x47 => "Home",
             0x48 => "ArrowUp",
             0x49 => "PageUp",
@@ -163,6 +169,12 @@ pub fn from_windows_scancode(scan_code: u8, extended: bool) -> Option<&'static s
             0x5B => "MetaLeft",
             0x5C => "MetaRight",
             0x5D => "ContextMenu",
+            0x5E => "Power",
+            0x65 => "BrowserSearch",
+            0x67 => "BrowserRefresh",
+            0x68 => "BrowserStop",
+            0x69 => "BrowserForward",
+            0x6A => "BrowserBack",
             _ => return None,
         });
     }
@@ -236,7 +248,9 @@ pub fn from_windows_scancode(scan_code: u8, extended: bool) -> Option<&'static s
         0x42 => "F8",
         0x43 => "F9",
         0x44 => "F10",
-        0x45 => "NumLock",
+        // Pause arrives as E1 1D 45; Windows reports it as plain 0x45, and
+        // NumLock as the extended 0x45.
+        0x45 => "Pause",
         0x46 => "ScrollLock",
         0x47 => "Numpad7",
         0x48 => "Numpad8",
@@ -254,6 +268,7 @@ pub fn from_windows_scancode(scan_code: u8, extended: bool) -> Option<&'static s
         0x56 => "IntlBackslash",
         0x57 => "F11",
         0x58 => "F12",
+        0x59 => "NumpadEqual",
         0x64 => "F13",
         0x65 => "F14",
         0x66 => "F15",
@@ -265,10 +280,13 @@ pub fn from_windows_scancode(scan_code: u8, extended: bool) -> Option<&'static s
         0x6C => "F21",
         0x6D => "F22",
         0x6E => "F23",
-        // ABNT and JIS keyboards.
+        // ABNT, JIS and Korean keyboards.
+        0x71 => "Lang2",
+        0x72 => "Lang1",
         0x73 => "IntlRo",
         0x76 => "F24",
         0x7D => "IntlYen",
+        0x7E => "NumpadComma",
         _ => return None,
     })
 }
@@ -392,7 +410,7 @@ pub fn from_xkb_keycode(keycode: u32) -> Option<&'static str> {
         125 => "MetaLeft",
         126 => "MetaRight",
         127 => "ContextMenu",
-        128 => "MediaStop",
+        128 => "BrowserStop",
         158 => "BrowserBack",
         159 => "BrowserForward",
         163 => "MediaTrackNext",
@@ -436,6 +454,7 @@ mod tests {
         // kVK_Delete is the backspace key; kVK_ForwardDelete is Delete.
         assert_eq!(from_macos_key_code(0x33), Some("Backspace"));
         assert_eq!(from_macos_key_code(0x75), Some("Delete"));
+        assert_eq!(from_macos_key_code(0x72), Some("Insert"));
         assert_eq!(from_macos_key_code(0x7F), None);
     }
 
@@ -455,6 +474,9 @@ mod tests {
         assert_eq!(from_windows_scancode(0x4B, false), Some("Numpad4"));
         assert_eq!(from_windows_scancode(0x5B, true), Some("MetaLeft"));
         assert_eq!(from_windows_scancode(0x1D, true), Some("ControlRight"));
+        assert_eq!(from_windows_scancode(0x45, false), Some("Pause"));
+        assert_eq!(from_windows_scancode(0x45, true), Some("NumLock"));
+        assert_eq!(from_windows_scancode(0x37, true), Some("PrintScreen"));
         assert_eq!(from_windows_scancode(0x00, false), None);
         assert_eq!(
             from_windows_scancode(0x10, true),
@@ -475,6 +497,8 @@ mod tests {
         assert_eq!(from_xkb_keycode(59 + 8), Some("F1"));
         assert_eq!(from_xkb_keycode(88 + 8), Some("F12"));
         assert_eq!(from_xkb_keycode(83 + 8), Some("NumpadDecimal"));
+        assert_eq!(from_xkb_keycode(128 + 8), Some("BrowserStop"));
+        assert_eq!(from_xkb_keycode(166 + 8), Some("MediaStop"));
         // Codes below the evdev offset are not physical keys.
         assert_eq!(from_xkb_keycode(7), None);
         assert_eq!(from_xkb_keycode(0), None);
