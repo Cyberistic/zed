@@ -837,6 +837,10 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn set_dock_badge(&self, label: Option<&str>) {
+        crate::dock::set_dock_badge(label);
+    }
+
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         Some(Rc::new(MacDisplay::primary()))
     }

@@ -34,6 +34,7 @@ pub(crate) struct TestPlatform {
     screen_capture_sources: RefCell<Vec<TestScreenCaptureSource>>,
     pub opened_url: RefCell<Option<String>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
+    dock_badge: RefCell<Option<String>>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
         RefCell<Option<oneshot::Sender<(Option<PathBuf>, Vec<std::ffi::OsString>)>>>,
@@ -146,9 +147,15 @@ impl TestPlatform {
             weak: weak.clone(),
             opened_url: Default::default(),
             system_notifications: Default::default(),
+            dock_badge: Default::default(),
             text_system,
             headless_renderer_factory,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dock_badge(&self) -> Option<String> {
+        self.dock_badge.borrow().clone()
     }
 
     pub(crate) fn simulate_new_path_selection(
@@ -500,6 +507,10 @@ impl Platform for TestPlatform {
         callback: Box<dyn FnMut(SystemNotificationResponse)>,
     ) {
         self.system_notifications.borrow_mut().response_callback = Some(callback);
+    }
+
+    fn set_dock_badge(&self, label: Option<&str>) {
+        *self.dock_badge.borrow_mut() = label.map(str::to_string);
     }
 
     fn set_menus(&self, _menus: Vec<crate::Menu>, _keymap: &Keymap) {}
