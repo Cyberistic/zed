@@ -42,7 +42,6 @@ pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
-    transform_stack: Vec<TransformationMatrix>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -59,7 +58,6 @@ impl Scene {
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
-        self.transform_stack.clear();
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -75,19 +73,10 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        let bounds = transform_bounds(bounds, self.current_transform());
-        self.push_replayed_layer(bounds);
-    }
-
-    fn push_replayed_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
         self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
-    }
-
-    pub(crate) fn push_transformed_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        self.push_replayed_layer(bounds);
     }
 
     pub fn pop_layer(&mut self) {
@@ -96,7 +85,7 @@ impl Scene {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
-        self.insert_transformed_primitive(primitive, self.current_transform());
+        self.insert_transformed_primitive(primitive, TransformationMatrix::unit());
     }
 
     pub(crate) fn insert_transformed_primitive(
@@ -157,29 +146,11 @@ impl Scene {
             .push(PaintOperation::Primitive(primitive));
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn with_transform<R>(
-        &mut self,
-        transform: TransformationMatrix,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let transform = self.current_transform().compose(transform);
-        self.transform_stack.push(transform);
-        let result = f(self);
-        self.transform_stack.pop();
-        result
-    }
-
-    pub(crate) fn current_transform(&self) -> TransformationMatrix {
-        self.transform_stack.last().copied().unwrap_or_default()
-    }
-
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self
-                    .insert_transformed_primitive(primitive.clone(), TransformationMatrix::unit()),
-                PaintOperation::StartLayer(bounds) => self.push_replayed_layer(*bounds),
+                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
         }
@@ -835,31 +806,6 @@ impl TransformationMatrix {
         }
     }
 
-    pub(crate) fn inverse(self) -> Option<TransformationMatrix> {
-        let [[a, b], [c, d]] = self.rotation_scale;
-        let determinant = a * d - b * c;
-        if determinant.abs() <= f32::EPSILON {
-            return None;
-        }
-
-        let inverse_determinant = determinant.recip();
-        let rotation_scale = [
-            [d * inverse_determinant, -b * inverse_determinant],
-            [-c * inverse_determinant, a * inverse_determinant],
-        ];
-        let translation = [
-            -(rotation_scale[0][0] * self.translation[0]
-                + rotation_scale[0][1] * self.translation[1]),
-            -(rotation_scale[1][0] * self.translation[0]
-                + rotation_scale[1][1] * self.translation[1]),
-        ];
-
-        Some(TransformationMatrix {
-            rotation_scale,
-            translation,
-        })
-    }
-
     /// Apply transformation to a point, mainly useful for debugging
     pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
         let input = [point.x.0, point.y.0];
@@ -1161,84 +1107,6 @@ impl From<Path<ScaledPixels>> for Primitive {
 mod tests {
     use super::*;
     use crate::{AtlasTextureKind, DevicePixels, TileId, size};
-
-    #[test]
-    fn transform_stack_composes_parent_then_child() {
-        let mut scene = Scene::default();
-        let parent =
-            TransformationMatrix::unit().translate(point(ScaledPixels(10.), ScaledPixels(0.)));
-        let child = TransformationMatrix::unit().scale(size(2., 2.));
-
-        scene.with_transform(parent, |scene| {
-            scene.with_transform(child, |scene| {
-                let transformed = scene
-                    .current_transform()
-                    .apply(point(Pixels(3.), Pixels(4.)));
-
-                assert_eq!(transformed, point(Pixels(16.), Pixels(8.)));
-            });
-        });
-    }
-
-    #[test]
-    fn nested_transform_matches_direct_composed_sprite() {
-        let parent =
-            TransformationMatrix::unit().translate(point(ScaledPixels(10.), ScaledPixels(0.)));
-        let child = TransformationMatrix::unit().scale(size(2., 2.));
-        let direct_transform = parent.compose(child);
-
-        let mut direct_scene = Scene::default();
-        direct_scene.with_transform(direct_transform, |scene| {
-            scene.insert_primitive(test_sprite());
-        });
-
-        let mut nested_scene = Scene::default();
-        nested_scene.with_transform(parent, |scene| {
-            scene.with_transform(child, |scene| {
-                scene.insert_primitive(test_sprite());
-            });
-        });
-
-        assert_eq!(direct_scene.monochrome_sprites.len(), 1);
-        assert_eq!(nested_scene.monochrome_sprites.len(), 1);
-
-        let Some(direct_sprite) = direct_scene.monochrome_sprites.first() else {
-            panic!("direct scene should emit one monochrome sprite");
-        };
-        let Some(nested_sprite) = nested_scene.monochrome_sprites.first() else {
-            panic!("nested scene should emit one monochrome sprite");
-        };
-
-        assert_eq!(nested_sprite.transformation, direct_sprite.transformation,);
-    }
-
-    #[test]
-    fn replay_preserves_previously_transformed_primitives() {
-        let transform =
-            TransformationMatrix::unit().translate(point(ScaledPixels(10.), ScaledPixels(20.)));
-
-        let mut previous_scene = Scene::default();
-        previous_scene.with_transform(transform, |scene| {
-            scene.insert_primitive(test_quad());
-        });
-
-        let mut replayed_scene = Scene::default();
-        replayed_scene.with_transform(transform, |scene| {
-            scene.replay(0..previous_scene.len(), &previous_scene);
-        });
-
-        assert_eq!(previous_scene.quads.len(), 1);
-        assert_eq!(replayed_scene.quads.len(), 1);
-
-        let Some(previous_quad) = previous_scene.quads.first() else {
-            panic!("previous scene should emit one quad");
-        };
-        let Some(replayed_quad) = replayed_scene.quads.first() else {
-            panic!("replayed scene should emit one quad");
-        };
-
-        assert_eq!(replayed_quad.bounds, previous_quad.bounds);
-    }
 
     #[test]
     fn transformed_monochrome_sprite_is_culled_by_visual_bounds() {
