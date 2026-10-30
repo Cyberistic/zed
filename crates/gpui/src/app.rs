@@ -1561,8 +1561,8 @@ impl App {
     /// Creates an item in the operating system's tray: an icon or a short title
     /// that lives outside of the application's windows.
     ///
-    /// Returns `None` on platforms without tray support; only macOS implements
-    /// it today. Dropping the returned handle removes the item.
+    /// Returns `None` on platforms without tray support, or when the system
+    /// refuses the item. Dropping the returned handle removes the item.
     pub fn create_tray(&self, options: TrayOptions) -> Option<TrayHandle> {
         self.platform.create_tray(options).map(TrayHandle::new)
     }
@@ -1593,20 +1593,6 @@ impl App {
         });
         // Dropping the previous task cancels its drain.
         *self.tray_event_task.borrow_mut() = Some(task);
-    }
-
-    /// Keeps the process running when the last window closes.
-    ///
-    /// The companion of [`App::create_tray`]: a tray app stays usable with no
-    /// windows open, so it usually wants `keep_running(true)`. Passing `false`
-    /// restores the platform default ([`QuitMode::Explicit`] on macOS and
-    /// [`QuitMode::LastWindowClosed`] elsewhere).
-    pub fn keep_running(&mut self, keep_running: bool) {
-        self.quit_mode = if keep_running {
-            QuitMode::Explicit
-        } else {
-            QuitMode::Default
-        };
     }
 
     /// Returns the full pathname of the current app bundle.
@@ -3166,9 +3152,7 @@ mod test {
     #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
-    use crate::{
-        AppContext, Context, Empty, IntoElement, QuitMode, Render, TestAppContext, Window,
-    };
+    use crate::{AppContext, Context, Empty, IntoElement, Render, TestAppContext, Window};
 
     struct RenderCounter(Rc<Cell<usize>>);
 
@@ -3177,27 +3161,6 @@ mod test {
             self.0.set(self.0.get() + 1);
             Empty
         }
-    }
-
-    #[gpui::test]
-    fn keep_running_survives_the_last_window_closing(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            cx.set_quit_mode(QuitMode::LastWindowClosed);
-            cx.keep_running(true);
-        });
-
-        cx.add_empty_window()
-            .update(|window, _| window.remove_window());
-        assert!(!cx.quit_requested());
-    }
-
-    #[gpui::test]
-    fn closing_the_last_window_quits_without_keep_running(cx: &mut TestAppContext) {
-        cx.update(|cx| cx.set_quit_mode(QuitMode::LastWindowClosed));
-
-        cx.add_empty_window()
-            .update(|window, _| window.remove_window());
-        assert!(cx.quit_requested());
     }
 
     #[gpui::test]

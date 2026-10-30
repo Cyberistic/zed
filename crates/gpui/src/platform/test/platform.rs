@@ -35,7 +35,6 @@ pub(crate) struct TestPlatform {
     pub opened_url: RefCell<Option<String>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     tray_event_sender: RefCell<Option<UnboundedSender<TrayEvent>>>,
-    quit_requested: std::cell::Cell<bool>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
         RefCell<Option<oneshot::Sender<(Option<PathBuf>, Vec<std::ffi::OsString>)>>>,
@@ -149,18 +148,14 @@ impl TestPlatform {
             opened_url: Default::default(),
             system_notifications: Default::default(),
             tray_event_sender: Default::default(),
-            quit_requested: std::cell::Cell::new(false),
             text_system,
             headless_renderer_factory,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn tray_event_sender(&self) -> Option<UnboundedSender<TrayEvent>> {
         self.tray_event_sender.borrow().clone()
-    }
-
-    pub(crate) fn quit_requested(&self) -> bool {
-        self.quit_requested.get()
     }
 
     pub(crate) fn simulate_new_path_selection(
@@ -351,9 +346,7 @@ impl Platform for TestPlatform {
         unimplemented!()
     }
 
-    fn quit(&self) {
-        self.quit_requested.set(true);
-    }
+    fn quit(&self) {}
 
     fn restart(&self, path: Option<PathBuf>, arguments: Vec<std::ffi::OsString>) {
         if let Some(tx) = self.expect_restart.take() {

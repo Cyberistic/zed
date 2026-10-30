@@ -1414,7 +1414,7 @@ fn file_save_dialog(
     Ok(Some(PathBuf::from(file_path_string)))
 }
 
-fn load_icon() -> Result<HICON> {
+pub(crate) fn load_icon() -> Result<HICON> {
     let module = unsafe { GetModuleHandleW(None).context("unable to get module handle")? };
     let handle = unsafe {
         LoadImageW(

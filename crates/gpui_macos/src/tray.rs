@@ -15,7 +15,7 @@ use objc2_app_kit::{
     NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu, NSMenuItem, NSStatusBar,
     NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSObject, NSString};
+use objc2_foundation::{NSObject, NSSize, NSString};
 
 /// The channel installed through [`gpui::Platform::set_tray_event_sender`].
 pub(crate) type TrayEventSender = Rc<RefCell<Option<UnboundedSender<TrayEvent>>>>;
@@ -194,9 +194,21 @@ fn menu_item(
     menu_item
 }
 
-/// Loads an image from disk. Template rendering is left to the artwork: the
-/// image is used as-is so that colored icons keep their color.
+/// The height AppKit's own status items draw their images at, in points.
+const MENU_BAR_ICON_HEIGHT: f64 = 18.0;
+
+/// Loads an image from disk, fitted to the menu bar's height.
+///
+/// A status item draws its image at the image's own point size, so an app
+/// icon would otherwise fill the bar. Template rendering is left to the
+/// artwork: the image is used as-is so that colored icons keep their color.
 fn load_image(path: &Path) -> Option<Retained<NSImage>> {
     let path = path.to_str()?;
-    NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))
+    let image = NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))?;
+    let size = image.size();
+    if size.height > 0.0 {
+        let scale = MENU_BAR_ICON_HEIGHT / size.height;
+        image.setSize(NSSize::new(size.width * scale, MENU_BAR_ICON_HEIGHT));
+    }
+    Some(image)
 }

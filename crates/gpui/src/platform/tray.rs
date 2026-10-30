@@ -11,7 +11,7 @@
 //! in whatever state the interrupted turn had, so they must not touch it.
 //!
 //! Tray items outlive the application's windows, so an app that shows one
-//! usually wants [`App::keep_running`] as well.
+//! usually wants [`QuitMode::Explicit`](crate::QuitMode::Explicit) as well.
 
 use crate::SharedString;
 use std::path::PathBuf;

@@ -64,6 +64,9 @@ impl WindowsTray {
     pub(crate) fn new(options: TrayOptions, events: TrayEventSender) -> Option<Rc<Self>> {
         let window = unsafe { create_message_window() }?;
         let icon = options.icon.as_deref().and_then(load_icon);
+        // A notification-area item cannot show text, so without an icon of its
+        // own it borrows the executable's (shared, so never destroyed).
+        let shown_icon = icon.or_else(|| crate::platform::load_icon().ok());
         let tooltip = options.tooltip.or(options.title);
 
         let mut notification = NOTIFYICONDATAW {
@@ -72,13 +75,13 @@ impl WindowsTray {
             uID: 1,
             uFlags: NIF_MESSAGE | NIF_TIP,
             uCallbackMessage: TRAY_CALLBACK_MESSAGE,
-            hIcon: icon.unwrap_or_default(),
+            hIcon: shown_icon.unwrap_or_default(),
             ..Default::default()
         };
         if let Some(tooltip) = &tooltip {
             write_wide(&mut notification.szTip, tooltip);
         }
-        if icon.is_some() {
+        if shown_icon.is_some() {
             notification.uFlags |= NIF_ICON;
         }
 
@@ -313,7 +316,7 @@ unsafe extern "system" fn tray_window_proc(
             WM_LBUTTONUP if tray.menu.borrow().is_empty() => {
                 send(&tray.events, TrayEvent::Click);
             }
-            WM_RBUTTONUP => tray.show_menu(),
+            WM_LBUTTONUP | WM_RBUTTONUP => tray.show_menu(),
             _ => {}
         }
     }

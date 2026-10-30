@@ -5,8 +5,8 @@
 //! menu, so a click reports an event on its own.
 
 use gpui::{
-    App, Bounds, Context, Render, TrayEvent, TrayMenuItem, TrayOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rgb, size,
+    App, Bounds, Context, QuitMode, Render, TrayEvent, TrayMenuItem, TrayOptions, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_platform::application;
 
@@ -57,7 +57,7 @@ fn menu() -> Vec<TrayMenuItem> {
 fn main() {
     application().run(|cx: &mut App| {
         // Without this the process would exit when the only window closes.
-        cx.keep_running(true);
+        cx.set_quit_mode(QuitMode::Explicit);
 
         let Some(tray) = cx.create_tray(TrayOptions {
             icon: None,
