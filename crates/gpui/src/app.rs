@@ -1317,6 +1317,16 @@ impl App {
         self.platform.unhide_other_apps();
     }
 
+    /// Sets the label drawn on the application's dock icon, or clears it with
+    /// `None`.
+    ///
+    /// Only macOS implements it; elsewhere the call does nothing. A
+    /// menu-bar-only app (`ActivationPolicy::Accessory`) has no dock icon, so
+    /// the label has nowhere to appear.
+    pub fn set_dock_badge(&self, label: Option<&str>) {
+        self.platform.set_dock_badge(label);
+    }
+
     /// Returns the list of currently active displays.
     pub fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
         self.platform.displays()
