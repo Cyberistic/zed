@@ -4,8 +4,17 @@
 //! thread. Its callbacks only push events into the channel installed by
 //! [`gpui::Platform::set_tray_event_sender`]; tray updates travel the other way
 //! through [`ksni::blocking::Handle::update`].
+//!
+//! Whether a left click opens the menu or reports [`TrayEvent::Click`] is the
+//! compile-time `ksni::Tray::MENU_ON_ACTIVATE`: it sets the item's `ItemIsMenu`
+//! property and makes `Activate` fail, which is what KDE Plasma reads to open
+//! the menu instead. So an item whose menu appears or disappears is registered
+//! again as the other [`SniTray`] type. GNOME's AppIndicator extension calls
+//! `Activate` only on a double click, so there a menu-less item reports
+//! [`TrayEvent::Click`] on a double click.
 
 use std::{
+    cell::RefCell,
     path::Path,
     sync::{Arc, atomic::AtomicUsize, atomic::Ordering},
 };
@@ -28,7 +37,7 @@ pub(crate) fn create(
     options: TrayOptions,
     events: TrayEventSender,
 ) -> Option<Box<dyn PlatformTray>> {
-    let tray = SniTray {
+    let state = TrayState {
         id: format!("gpui-tray-{}", next_tray_id()),
         icon: options.icon.as_deref().map(icon_pixmap).unwrap_or_default(),
         title: options.title,
@@ -37,8 +46,10 @@ pub(crate) fn create(
         events,
     };
 
-    match tray.spawn() {
-        Ok(handle) => Some(Box::new(LinuxTray { handle })),
+    match Service::spawn(state) {
+        Ok(service) => Some(Box::new(LinuxTray {
+            service: RefCell::new(service),
+        })),
         Err(error) => {
             log::warn!("failed to create the tray item: {error}");
             None
@@ -53,16 +64,32 @@ fn next_tray_id() -> usize {
 
 /// Owns a tray item for the application.
 struct LinuxTray {
-    handle: Handle<SniTray>,
+    service: RefCell<Service>,
 }
 
 impl PlatformTray for LinuxTray {
     fn set_menu(&self, items: Vec<TrayMenuItem>) {
-        let _ = self.handle.update(move |tray| tray.menu = items);
+        let mut service = self.service.borrow_mut();
+        if service.is_menu() != items.is_empty() {
+            service.update(move |state| state.menu = items);
+            return;
+        }
+
+        let Some(mut state) = service.update(|state| state.clone()) else {
+            return;
+        };
+        state.menu = items;
+        service.shutdown();
+        match Service::spawn(state) {
+            Ok(respawned) => *service = respawned,
+            Err(error) => log::warn!("failed to register the tray item again: {error}"),
+        }
     }
 
     fn set_tooltip(&self, tooltip: Option<SharedString>) {
-        let _ = self.handle.update(move |tray| tray.tooltip = tooltip);
+        self.service
+            .borrow()
+            .update(move |state| state.tooltip = tooltip);
     }
 
     fn set_title(&self, _title: Option<SharedString>) {
@@ -72,12 +99,48 @@ impl PlatformTray for LinuxTray {
 
 impl Drop for LinuxTray {
     fn drop(&mut self) {
-        // Waits for the service to unregister the item.
-        self.handle.shutdown().wait();
+        self.service.get_mut().shutdown();
     }
 }
 
-struct SniTray {
+/// The running StatusNotifierItem service, typed by whether the item is a menu.
+enum Service {
+    Click(Handle<SniTray<false>>),
+    Menu(Handle<SniTray<true>>),
+}
+
+impl Service {
+    fn spawn(state: TrayState) -> Result<Self, ksni::Error> {
+        if state.menu.is_empty() {
+            Ok(Self::Click(SniTray(state).spawn()?))
+        } else {
+            Ok(Self::Menu(SniTray(state).spawn()?))
+        }
+    }
+
+    fn is_menu(&self) -> bool {
+        matches!(self, Self::Menu(_))
+    }
+
+    /// Returns `None` once the service has stopped.
+    fn update<R>(&self, f: impl FnOnce(&mut TrayState) -> R) -> Option<R> {
+        match self {
+            Self::Click(handle) => handle.update(|tray| f(&mut tray.0)),
+            Self::Menu(handle) => handle.update(|tray| f(&mut tray.0)),
+        }
+    }
+
+    /// Waits for the service to unregister the item.
+    fn shutdown(&self) {
+        match self {
+            Self::Click(handle) => handle.shutdown().wait(),
+            Self::Menu(handle) => handle.shutdown().wait(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TrayState {
     id: String,
     icon: Vec<ksni::Icon>,
     title: Option<SharedString>,
@@ -86,49 +149,47 @@ struct SniTray {
     events: TrayEventSender,
 }
 
-impl SniTray {
-    fn send(&self, event: TrayEvent) {
-        if let Some(sender) = self.events.lock().as_ref() {
-            sender.unbounded_send(event).ok();
-        }
-    }
-}
+/// `MENU_ON_ACTIVATE` is true exactly when `menu` is not empty; [`Service`]
+/// keeps that true.
+struct SniTray<const MENU_ON_ACTIVATE: bool>(TrayState);
 
-impl ksni::Tray for SniTray {
+impl<const MENU_ON_ACTIVATE: bool> ksni::Tray for SniTray<MENU_ON_ACTIVATE> {
+    const MENU_ON_ACTIVATE: bool = MENU_ON_ACTIVATE;
+
     fn id(&self) -> String {
-        self.id.clone()
+        self.0.id.clone()
     }
 
     fn title(&self) -> String {
-        self.title.as_deref().unwrap_or_default().to_string()
+        self.0.title.as_deref().unwrap_or_default().to_string()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        self.icon.clone()
+        self.0.icon.clone()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: self.title.as_deref().unwrap_or_default().to_string(),
-            description: self.tooltip.as_deref().unwrap_or_default().to_string(),
+            title: self.0.title.as_deref().unwrap_or_default().to_string(),
+            description: self.0.tooltip.as_deref().unwrap_or_default().to_string(),
             ..Default::default()
         }
     }
 
-    /// A left click. Clicks open the menu when the item has one, so this only
-    /// reports an event for a menu-less item.
+    /// A left click. `ksni` calls this only for a menu-less item.
     fn activate(&mut self, _x: i32, _y: i32) {
-        if self.menu.is_empty() {
-            self.send(TrayEvent::Click);
+        if let Some(sender) = self.0.events.lock().as_ref() {
+            sender.unbounded_send(TrayEvent::Click).ok();
         }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        self.menu
+        self.0
+            .menu
             .iter()
             .map(|item| {
                 let id = item.id.clone();
-                let events = self.events.clone();
+                let events = self.0.events.clone();
                 let activate = Box::new(move |_tray: &mut Self| {
                     if let Some(sender) = events.lock().as_ref() {
                         sender.unbounded_send(TrayEvent::MenuItem(id.clone())).ok();
