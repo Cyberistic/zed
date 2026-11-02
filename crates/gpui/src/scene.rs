@@ -325,6 +325,9 @@ impl Primitive {
             }
             Primitive::PolychromeSprite(mut sprite) => {
                 sprite.bounds = transform_bounds(sprite.bounds, transform);
+                if let Some(scale) = transform.uniform_scale() {
+                    sprite.corner_radii = scale_corners(sprite.corner_radii, scale);
+                }
                 Primitive::PolychromeSprite(sprite)
             }
             Primitive::Surface(mut surface) => {
@@ -806,7 +809,7 @@ impl TransformationMatrix {
         }
     }
 
-    /// Apply transformation to a point, mainly useful for debugging
+    /// Applies this transform to a point in the same coordinate space as its translation.
     pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
         let input = [point.x.0, point.y.0];
         let mut output = self.translation;
@@ -816,6 +819,38 @@ impl TransformationMatrix {
             }
         }
         Point::new(output[0].into(), output[1].into())
+    }
+
+    /// Returns the inverse, or `None` for a singular or non-finite transform.
+    pub fn inverse(self) -> Option<Self> {
+        let [[xx, xy], [yx, yy]] = self.rotation_scale;
+        let determinant = xx * yy - xy * yx;
+        if determinant == 0. || !determinant.is_finite() {
+            return None;
+        }
+        let rotation_scale = [
+            [yy / determinant, -xy / determinant],
+            [-yx / determinant, xx / determinant],
+        ];
+        let translation = rotation_scale
+            .map(|row| -(row[0] * self.translation[0] + row[1] * self.translation[1]));
+        let inverse = Self {
+            rotation_scale,
+            translation,
+        };
+        inverse
+            .rotation_scale
+            .iter()
+            .flatten()
+            .chain(inverse.translation.iter())
+            .all(|value| value.is_finite())
+            .then_some(inverse)
+    }
+
+    /// Returns the axis-aligned bounds enclosing the transformed rectangle.
+    pub fn apply_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        transform_bounds(bounds.map(|value| ScaledPixels(value.0)), self)
+            .map(|value| Pixels(value.0))
     }
 
     pub(crate) fn apply_scaled(&self, point: Point<ScaledPixels>) -> Point<ScaledPixels> {
@@ -1179,6 +1214,30 @@ mod tests {
             corner_radii: Corners::default(),
             border_widths: Edges::default(),
         }
+    }
+
+    #[test]
+    fn uniform_transform_scales_image_corner_radii() {
+        let sprite = test_sprite();
+        let image = PolychromeSprite {
+            order: 0,
+            nearest_neighbor: false.into(),
+            grayscale: false.into(),
+            opacity: 1.,
+            bounds: sprite.bounds,
+            content_mask: sprite.content_mask,
+            corner_radii: Corners::all(ScaledPixels(2.)),
+            tile: sprite.tile,
+        };
+        let Primitive::PolychromeSprite(image) = Primitive::from(image).transform(scale_by(2., 2.))
+        else {
+            panic!("an image must stay an image");
+        };
+        assert_eq!(
+            image.bounds.size,
+            size(ScaledPixels(20.), ScaledPixels(20.))
+        );
+        assert_eq!(image.corner_radii.top_left, ScaledPixels(4.));
     }
 
     #[test]

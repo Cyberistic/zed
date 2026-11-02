@@ -3805,6 +3805,22 @@ impl Window {
         self.transform_stack.last().copied().unwrap_or_default()
     }
 
+    /// Captures the current layout-to-window transform in logical pixels.
+    ///
+    /// Capture during prepaint or paint and retain it for event callbacks. Use
+    /// `inverse().map(|inverse| inverse.apply(event.position))` for local input,
+    /// and `apply_bounds` for painted bounds, automation and IME rectangles.
+    /// Do not compose the captured transform with device-pixel matrices.
+    pub fn element_transform(&self) -> TransformationMatrix {
+        let transform = self.current_transform();
+        TransformationMatrix {
+            rotation_scale: transform.rotation_scale,
+            translation: transform
+                .translation
+                .map(|value| value / self.scale_factor()),
+        }
+    }
+
     /// Where layout `bounds` land on screen under the current transform.
     fn transform_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
         let transform = self.current_transform();
@@ -4382,7 +4398,8 @@ impl Window {
         let outer_bounds = quad.bounds;
         let inner_bounds = Self::largest_border_interior(&quad);
 
-        if inner_bounds.is_empty() {
+        // Non-uniform transforms leave border widths unscaled, so local strips cannot mask them.
+        if inner_bounds.is_empty() || self.current_transform().uniform_scale().is_none() {
             self.insert_primitive(quad);
             return;
         }
@@ -4411,6 +4428,7 @@ impl Window {
         ];
 
         for strip in strips {
+            let strip = crate::scene::transform_bounds(strip, self.current_transform());
             let content_mask_bounds = quad.content_mask.bounds.intersect(&strip);
             if !content_mask_bounds.is_empty() {
                 self.insert_primitive(Quad {
@@ -8330,6 +8348,93 @@ mod transform_tests {
             window.next_frame.scene.quads.clone()
         })
         .expect("test window should still exist")
+    }
+
+    #[gpui::test]
+    fn captured_element_transform_converts_input_after_scope_ends(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        cx.update_window(window.into(), |_, window, _| {
+            window.invalidator.set_phase(DrawPhase::Prepaint);
+            let bounds = Bounds::new(point(px(10.), px(20.)), size(px(20.), px(20.)));
+            let captured = window.with_style_transform(
+                Some(ElementTransform::default().translate(point(px(5.), px(6.)))),
+                bounds,
+                |window| {
+                    window.with_style_transform(
+                        Some(
+                            ElementTransform::default()
+                                .origin(point(0.5, 0.5))
+                                .translate(point(px(40.), px(10.)))
+                                .scale(size(2., 2.)),
+                        ),
+                        bounds,
+                        |window| window.element_transform(),
+                    )
+                },
+            );
+            assert_eq!(window.element_transform(), TransformationMatrix::unit());
+            window.invalidator.set_phase(DrawPhase::None);
+
+            let local = point(px(15.), px(25.));
+            let screen = point(px(55.), px(36.));
+            assert_eq!(captured.apply(local), screen);
+            assert_eq!(
+                captured.inverse().expect("invertible zoom").apply(screen),
+                local
+            );
+            assert_eq!(
+                captured.apply_bounds(bounds),
+                Bounds::new(point(px(45.), px(26.)), size(px(40.), px(40.)))
+            );
+            assert!(
+                TransformationMatrix::unit()
+                    .scale(size(0., 1.))
+                    .inverse()
+                    .is_none()
+            );
+            assert!(
+                TransformationMatrix::unit()
+                    .translate(point(ScaledPixels(f32::NAN), ScaledPixels(0.)))
+                    .inverse()
+                    .is_none()
+            );
+        })
+        .expect("test window should still exist");
+    }
+
+    #[gpui::test]
+    fn transformed_border_only_quads_keep_complete_geometry(cx: &mut TestAppContext) {
+        let quads = paint_test_root(
+            div()
+                .w(px(20.))
+                .h(px(20.))
+                .border_1()
+                .border_color(white())
+                .transform(ElementTransform::default().translate(point(px(40.), px(0.)))),
+            cx,
+        );
+
+        assert_eq!(quads.len(), 4);
+        for quad in quads {
+            assert!(!quad.bounds.intersect(&quad.content_mask.bounds).is_empty());
+            assert!(quad.content_mask.bounds.left() >= ScaledPixels(80.));
+        }
+
+        let quads = paint_test_root(
+            div()
+                .w(px(20.))
+                .h(px(20.))
+                .border_1()
+                .border_color(white())
+                .transform(ElementTransform::default().scale(size(1., 0.5))),
+            cx,
+        );
+        let top_border_point = point(ScaledPixels(20.), ScaledPixels(1.5));
+        assert!(quads.iter().any(|quad| {
+            quad.border_widths.top == ScaledPixels(2.)
+                && quad.bounds.contains(&top_border_point)
+                && quad.content_mask.bounds.contains(&top_border_point)
+        }));
     }
 
     #[gpui::test]

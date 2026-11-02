@@ -42,6 +42,39 @@ The features on `gpui_platform` are platform-specific, so the list above is a sa
 
 - **Windows** — no features are required. Windowing uses Win32 and text uses DirectWrite. `font-kit` has no effect here.
 
+### Pan and zoom
+
+`ElementTransform` applies translation and scale to a `div` subtree after layout.
+Children keep their layout coordinates. Paint, clipping and hitboxes move together.
+
+```rust
+div().transform(
+    ElementTransform::default()
+        .origin(point(0.5, 0.5))
+        .translate(point(px(40.), px(10.)))
+        .scale(size(2., 2.)),
+)
+```
+
+**Custom elements** must convert coordinates when they compare mouse input with
+layout bounds, report automation bounds, or return IME rectangles. Capture
+`window.element_transform()` during prepaint or paint and retain it for later
+callbacks. Its translation uses logical pixels, independent of display density.
+
+```rust
+let transform = window.element_transform(); // capture while drawing
+let screen_bounds = transform.apply_bounds(layout_bounds);
+// Later, in a mouse callback, after the drawing scope has ended:
+let local_position = transform.inverse().map(|inverse| inverse.apply(event.position));
+```
+
+`inverse()` returns `None` for singular or non-finite transforms, including zero
+scale. Mouse event positions themselves remain in window coordinates.
+Only `div` and text elements apply their own `Style::transform`; other elements
+can be transformed through a parent `div`. Keep anchored overlays outside a
+transformed subtree. Uniform positive scale also scales decoration geometry;
+non-uniform scale leaves corner radii, border widths and shadow blur unchanged.
+
 ### Additional Topics
 
 - [Ownership and data flow](_ownership_and_data_flow)
