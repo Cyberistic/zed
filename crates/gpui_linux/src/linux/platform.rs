@@ -1152,6 +1152,7 @@ pub(super) fn keystroke_from_xkb(
         modifiers,
         key,
         key_char,
+        code: gpui::keystroke_code::from_xkb_keycode(keycode.raw()).map(str::to_owned),
     }
 }
 

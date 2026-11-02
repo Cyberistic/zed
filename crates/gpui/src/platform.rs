@@ -1,6 +1,7 @@
 mod app_menu;
 mod keyboard;
 mod keystroke;
+pub mod keystroke_code;
 mod tray;
 
 #[cfg(all(target_os = "linux", feature = "wayland"))]
