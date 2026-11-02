@@ -8,6 +8,7 @@ use std::{
     os::windows::ffi::OsStrExt as _,
     path::Path,
     rc::Rc,
+    sync::OnceLock,
 };
 
 use futures::channel::mpsc::UnboundedSender;
@@ -22,12 +23,13 @@ use windows::{
                 Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
-                AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-                DestroyMenu, DestroyWindow, GetCursorPos, GetSystemMetrics, HICON, IMAGE_ICON,
-                LR_LOADFROMFILE, LoadImageW, MF_CHECKED, MF_GRAYED, MF_STRING, PostMessageW,
-                RegisterClassW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-                WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+                AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
+                DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos,
+                GetSystemMetrics, HICON, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW, MF_CHECKED,
+                MF_GRAYED, MF_STRING, MSGFLT_ALLOW, PostMessageW, RegisterClassW,
+                RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow,
+                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE,
+                WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
             },
         },
     },
@@ -36,6 +38,15 @@ use windows::{
 
 /// The message the notification area posts to the tray's window.
 const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
+
+/// Explorer broadcasts this to top-level windows when it creates the taskbar
+/// again, after a restart or crash, by which point every item is gone.
+/// `0` means registering it failed.
+fn taskbar_created_message() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    // SAFETY: the name is a static null-terminated string.
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) })
+}
 
 /// The channel installed through [`gpui::Platform::set_tray_event_sender`].
 pub(crate) type TrayEventSender = Rc<RefCell<Option<UnboundedSender<TrayEvent>>>>;
@@ -55,7 +66,9 @@ thread_local! {
 pub(crate) struct WindowsTray {
     window: HWND,
     icon: Option<HICON>,
-    notification: RefCell<NOTIFYICONDATAW>,
+    /// A copy is passed to each `Shell_NotifyIconW` call, which can dispatch
+    /// sent messages, `TaskbarCreated` included, back into this tray.
+    notification: Cell<NOTIFYICONDATAW>,
     menu: RefCell<Vec<TrayMenuItem>>,
     events: TrayEventSender,
 }
@@ -63,6 +76,13 @@ pub(crate) struct WindowsTray {
 impl WindowsTray {
     pub(crate) fn new(options: TrayOptions, events: TrayEventSender) -> Option<Rc<Self>> {
         let window = unsafe { create_message_window() }?;
+        // An elevated process would otherwise not receive the lower-integrity
+        // Explorer's broadcast.
+        // SAFETY: `window` was just created on this thread.
+        unsafe {
+            let _ =
+                ChangeWindowMessageFilterEx(window, taskbar_created_message(), MSGFLT_ALLOW, None);
+        }
         let icon = options.icon.as_deref().and_then(load_icon);
         // A notification-area item cannot show text, so without an icon of its
         // own it borrows the executable's (shared, so never destroyed).
@@ -100,7 +120,7 @@ impl WindowsTray {
         let tray = Rc::new(Self {
             window,
             icon,
-            notification: RefCell::new(notification),
+            notification: Cell::new(notification),
             menu: RefCell::new(Vec::new()),
             events,
         });
@@ -119,19 +139,26 @@ impl WindowsTray {
     }
 
     fn set_tooltip(&self, tooltip: Option<SharedString>) {
-        {
-            let mut notification = self.notification.borrow_mut();
-            notification.szTip.fill(0);
-            if let Some(tooltip) = &tooltip {
-                write_wide(&mut notification.szTip, tooltip);
+        let mut notification = self.notification.get();
+        notification.szTip.fill(0);
+        if let Some(tooltip) = &tooltip {
+            write_wide(&mut notification.szTip, tooltip);
+        }
+        notification.uFlags |= NIF_TIP;
+        self.notification.set(notification);
+        // SAFETY: the notification data still describes this item.
+        unsafe {
+            if !Shell_NotifyIconW(NIM_MODIFY, &notification).as_bool() {
+                log::warn!("failed to update the tray item's tooltip");
             }
-            notification.uFlags |= NIF_TIP;
-            // SAFETY: the notification data still describes this item.
-            unsafe {
-                if !Shell_NotifyIconW(NIM_MODIFY, &*notification).as_bool() {
-                    log::warn!("failed to update the tray item's tooltip");
-                }
-            }
+        }
+    }
+
+    /// Adds the item again once Explorer has created a new taskbar.
+    fn restore(&self) {
+        // SAFETY: the notification data still describes this item.
+        if !unsafe { Shell_NotifyIconW(NIM_ADD, &self.notification.get()) }.as_bool() {
+            log::warn!("failed to add the tray item again after the taskbar restarted");
         }
     }
 
@@ -199,7 +226,7 @@ impl WindowsTray {
         });
         // SAFETY: the tray's handles are released exactly once, here.
         unsafe {
-            let _ = Shell_NotifyIconW(NIM_DELETE, &*self.notification.borrow());
+            let _ = Shell_NotifyIconW(NIM_DELETE, &self.notification.get());
             let _ = DestroyWindow(self.window);
             if let Some(icon) = self.icon {
                 let _ = DestroyIcon(icon);
@@ -305,6 +332,13 @@ unsafe extern "system" fn tray_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let taskbar_created = taskbar_created_message();
+    if taskbar_created != 0 && message == taskbar_created {
+        if let Some(tray) = tray_for(window) {
+            tray.restore();
+        }
+        return LRESULT(0);
+    }
     if message != TRAY_CALLBACK_MESSAGE {
         // SAFETY: forwarding an unhandled message is what the default
         // procedure is for.
