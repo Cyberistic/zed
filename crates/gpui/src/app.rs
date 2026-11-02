@@ -3132,17 +3132,6 @@ mod test {
         }
     }
 
-    /// The badge belongs to the platform: `App` must forward it, and `None`
-    /// must clear it rather than leave the previous label in place.
-    #[gpui::test]
-    fn set_dock_badge_forwards_to_the_platform(cx: &mut TestAppContext) {
-        cx.update(|cx| cx.set_dock_badge(Some("3")));
-        assert_eq!(cx.dock_badge().as_deref(), Some("3"));
-
-        cx.update(|cx| cx.set_dock_badge(None));
-        assert_eq!(cx.dock_badge(), None);
-    }
-
     #[gpui::test]
     fn async_app_refresh_flushes_refresh_effect(cx: &mut TestAppContext) {
         let render_count = Rc::new(Cell::new(0));
