@@ -34,6 +34,7 @@ pub struct VisualTestPlatform {
     foreground_executor: ForegroundExecutor,
     platform: Rc<dyn Platform>,
     clipboard: Mutex<Option<ClipboardItem>>,
+    #[cfg(target_os = "macos")]
     find_pasteboard: Mutex<Option<ClipboardItem>>,
 }
 
@@ -54,6 +55,7 @@ impl VisualTestPlatform {
             foreground_executor,
             platform,
             clipboard: Mutex::new(None),
+            #[cfg(target_os = "macos")]
             find_pasteboard: Mutex::new(None),
         }
     }
@@ -232,6 +234,16 @@ impl Platform for VisualTestPlatform {
     #[cfg(target_os = "macos")]
     fn write_to_find_pasteboard(&self, item: ClipboardItem) {
         *self.find_pasteboard.lock() = Some(item);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn read_from_primary(&self) -> Option<ClipboardItem> {
+        None
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn write_to_primary(&self, _item: ClipboardItem) {
+        // The test platform does not simulate the X11/Wayland primary selection.
     }
 
     fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Task<Result<()>> {
