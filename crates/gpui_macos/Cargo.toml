@@ -52,7 +52,9 @@ metal.workspace = true
 objc.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = [
+    "NSApplication",
     "NSCell",
+    "NSDockTile",
     "NSImage",
     "NSMenu",
     "NSMenuItem",

@@ -1474,16 +1474,35 @@ impl WgpuRenderer {
             self.resources().surface.is_none(),
             "render_to_pixels needs a renderer from new_offscreen"
         );
+        self.update_drawable_size(size);
+        self.render_readback(scene, pixels)
+    }
+
+    /// Renders `scene` at the current surface size and reads it back as RGBA,
+    /// without acquiring, configuring or presenting the surface.
+    #[cfg(feature = "test-support")]
+    pub fn render_to_image(&mut self, scene: &Scene) -> Result<image::RgbaImage> {
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        let mut pixels = vec![0; width as usize * height as usize * 4];
+        self.render_readback(scene, &mut pixels)?;
+        image::RgbaImage::from_raw(width, height, pixels)
+            .context("readback size does not match the surface size")
+    }
+
+    /// Renders `scene` at the surface size into the readback texture and copies
+    /// it into `pixels` as tightly packed RGBA rows.
+    fn render_readback(&mut self, scene: &Scene, pixels: &mut [u8]) -> Result<()> {
         anyhow::ensure!(!self.device_lost(), "the GPU device was lost");
-        let width = (size.width.0.max(1) as u32).min(self.max_texture_size);
-        let height = (size.height.0.max(1) as u32).min(self.max_texture_size);
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        let format = self.surface_config.format;
         let unpadded_bytes_per_row = width * 4;
         anyhow::ensure!(
             pixels.len() == unpadded_bytes_per_row as usize * height as usize,
             "pixel buffer does not match {width}x{height}"
         );
 
-        self.update_drawable_size(size);
         self.atlas.before_frame();
         self.ensure_intermediate_textures();
         self.ensure_readback(width, height);
@@ -1555,6 +1574,16 @@ impl WgpuRenderer {
             }
         }
         readback.buffer.unmap();
+
+        // A windowed renderer draws in the surface format, which is usually BGRA.
+        if matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
 
         if let Some(error) = self.last_error.lock().unwrap().take() {
             anyhow::bail!("GPU error during offscreen frame: {error}");
@@ -2456,7 +2485,166 @@ impl RenderingParameters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{MonochromeSprite, PolychromeSprite, Quad, Shadow, SubpixelSprite, Underline};
+    use gpui::{
+        AtlasKey, ContentMask, FontId, GlyphId, Hsla, MonochromeSprite, PlatformAtlas,
+        PolychromeSprite, Quad, RenderGlyphParams, Shadow, SubpixelSprite, TransformationMatrix,
+        Underline, blue, point, px, red, size, white,
+    };
+    use std::borrow::Cow;
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    fn scaled_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
+        Bounds::new(
+            point(ScaledPixels(x), ScaledPixels(y)),
+            size(ScaledPixels(width), ScaledPixels(height)),
+        )
+    }
+
+    fn insert_quad(scene: &mut Scene, bounds: Bounds<ScaledPixels>, color: Hsla) {
+        scene.insert_primitive(Quad {
+            bounds,
+            content_mask: ContentMask { bounds },
+            background: color.into(),
+            ..Default::default()
+        });
+    }
+
+    fn render(renderer: &mut WgpuRenderer, scene: &Scene, width: i32, height: i32) -> Vec<u8> {
+        let mut pixels = vec![0; width as usize * height as usize * 4];
+        renderer
+            .render_to_pixels(
+                scene,
+                size(DevicePixels(width), DevicePixels(height)),
+                &mut pixels,
+            )
+            .expect("offscreen render should succeed");
+        pixels
+    }
+
+    fn solid_pixels(color: [u8; 4], width: usize, height: usize) -> Vec<u8> {
+        color.repeat(width * height)
+    }
+
+    // Three pixels make a 12 byte row, which wgpu pads to 256 bytes, so a missed
+    // row stride shows up as garbage from the second row on.
+    #[test]
+    fn render_to_pixels_strips_row_padding_and_returns_rgba_for_each_target_format()
+    -> anyhow::Result<()> {
+        let context = WgpuContext::new_offscreen()?;
+        let mut scene = Scene::default();
+        insert_quad(&mut scene, scaled_bounds(0., 0., 3., 2.), red());
+        insert_quad(&mut scene, scaled_bounds(2., 0., 1., 2.), blue());
+        scene.finish();
+        let expected = [RED, RED, BLUE, RED, RED, BLUE].concat();
+
+        // Windowed renderers draw in the surface format, usually BGRA, while
+        // new_offscreen picks RGBA. Both must read back as RGBA.
+        for format in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ] {
+            let mut renderer =
+                WgpuRenderer::new_offscreen(&context, size(DevicePixels(3), DevicePixels(2)))?;
+            renderer.surface_config.format = format;
+            let resources = renderer.resources.as_mut().context("GPU resources")?;
+            resources.pipelines = WgpuRenderer::create_pipelines(
+                &resources.device,
+                &resources.bind_group_layouts,
+                format,
+                renderer.surface_config.alpha_mode,
+                renderer.rendering_params.path_sample_count,
+                renderer.dual_source_blending,
+                renderer.uses_webgl_instance_data,
+            );
+
+            assert_eq!(render(&mut renderer, &scene, 3, 2), expected, "{format:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_to_pixels_reuses_and_resizes_the_readback() -> anyhow::Result<()> {
+        let context = WgpuContext::new_offscreen()?;
+        let mut renderer =
+            WgpuRenderer::new_offscreen(&context, size(DevicePixels(3), DevicePixels(2)))?;
+        let scene_of = |color: Hsla| {
+            let mut scene = Scene::default();
+            insert_quad(&mut scene, scaled_bounds(0., 0., 64., 64.), color);
+            scene.finish();
+            scene
+        };
+
+        let red_scene = scene_of(red());
+        let blue_scene = scene_of(blue());
+        assert_eq!(
+            render(&mut renderer, &red_scene, 3, 2),
+            solid_pixels(RED, 3, 2)
+        );
+        assert_eq!(
+            render(&mut renderer, &blue_scene, 3, 2),
+            solid_pixels(BLUE, 3, 2)
+        );
+        assert_eq!(
+            render(&mut renderer, &red_scene, 5, 3),
+            solid_pixels(RED, 5, 3)
+        );
+        assert_eq!(
+            render(&mut renderer, &blue_scene, 2, 4),
+            solid_pixels(BLUE, 2, 4)
+        );
+        Ok(())
+    }
+
+    // Glyphs are queued for upload when they are rasterized and only reach the
+    // GPU in atlas.before_frame(). A readback that skips it paints no text.
+    #[test]
+    fn render_to_pixels_flushes_glyph_uploads_queued_this_frame() -> anyhow::Result<()> {
+        let context = WgpuContext::new_offscreen()?;
+        let mut renderer =
+            WgpuRenderer::new_offscreen(&context, size(DevicePixels(4), DevicePixels(4)))?;
+        let key = AtlasKey::Glyph(RenderGlyphParams {
+            font_id: FontId(0),
+            glyph_id: GlyphId(0),
+            font_size: px(16.),
+            subpixel_variant: point(0, 0),
+            scale_factor: 1.,
+            is_emoji: false,
+            subpixel_rendering: false,
+            dilation: 0,
+        });
+        let tile = renderer
+            .sprite_atlas()
+            .get_or_insert_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(4), DevicePixels(4)),
+                    Cow::Owned(vec![255; 16]),
+                )))
+            })?
+            .context("glyph tile")?;
+
+        let bounds = scaled_bounds(0., 0., 4., 4.);
+        let mut scene = Scene::default();
+        scene.insert_primitive(MonochromeSprite {
+            order: 0,
+            pad: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            color: white(),
+            tile,
+            transformation: TransformationMatrix::unit(),
+        });
+        scene.finish();
+
+        let pixels = render(&mut renderer, &scene, 4, 4);
+        let center = &pixels[(4 + 1) * 4..(4 + 2) * 4];
+        assert!(
+            center.iter().all(|channel| *channel >= 250),
+            "glyph pixel should be white, got {center:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn webgl_shader_is_valid_wgsl_without_storage_buffers() {

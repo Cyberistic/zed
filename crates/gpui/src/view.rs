@@ -1,7 +1,8 @@
 use crate::{
     AnyElement, AnyEntity, AnyWeakEntity, App, Bounds, ContentMask, Context, Element, ElementId,
     Entity, EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, PaintIndex,
-    Pixels, PrepaintStateIndex, Render, RenderOnce, Style, StyleRefinement, TextStyle, WeakEntity,
+    Pixels, PrepaintStateIndex, Render, RenderOnce, Style, StyleRefinement, TextStyle,
+    TransformationMatrix, WeakEntity,
 };
 use crate::{Empty, Window};
 use anyhow::Result;
@@ -97,6 +98,43 @@ impl<V: 'static + Render> IntoElement for Entity<V> {
 
     fn into_element(self) -> Self::Element {
         ViewElement::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ScaledPixels, point, px, size};
+
+    fn bounds() -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(0.)), size(px(10.), px(10.)))
+    }
+
+    fn cache_key(transform: TransformationMatrix) -> ViewElementCacheKey {
+        let bounds = bounds();
+        ViewElementCacheKey {
+            bounds,
+            content_mask: ContentMask { bounds },
+            text_style: TextStyle::default(),
+            transform,
+        }
+    }
+
+    #[test]
+    fn view_cache_key_rejects_a_changed_transform() {
+        let unit = TransformationMatrix::unit();
+        let translated =
+            unit.translate(point(ScaledPixels(10.), ScaledPixels(0.)));
+        let key = cache_key(unit);
+        let bounds = bounds();
+
+        assert!(key.matches(bounds, ContentMask { bounds }, &TextStyle::default(), unit));
+        assert!(!key.matches(
+            bounds,
+            ContentMask { bounds },
+            &TextStyle::default(),
+            translated
+        ));
     }
 }
 
@@ -293,6 +331,22 @@ struct ViewElementCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
+    transform: TransformationMatrix,
+}
+
+impl ViewElementCacheKey {
+    fn matches(
+        &self,
+        bounds: Bounds<Pixels>,
+        content_mask: ContentMask<Pixels>,
+        text_style: &TextStyle,
+        transform: TransformationMatrix,
+    ) -> bool {
+        self.bounds == bounds
+            && self.content_mask == content_mask
+            && self.text_style == *text_style
+            && self.transform == transform
+    }
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -382,11 +436,12 @@ impl<V: View> Element for ViewElement<V> {
                     |element_state, window| {
                         let content_mask = window.content_mask();
                         let text_style = window.text_style();
+                        let transform = window.current_transform();
 
                         if let Some(mut element_state) = element_state
-                            && element_state.cache_key.bounds == bounds
-                            && element_state.cache_key.content_mask == content_mask
-                            && element_state.cache_key.text_style == text_style
+                            && element_state
+                                .cache_key
+                                .matches(bounds, content_mask, &text_style, transform)
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                         {
@@ -427,6 +482,7 @@ impl<V: View> Element for ViewElement<V> {
                                     bounds,
                                     content_mask,
                                     text_style,
+                                    transform,
                                 },
                             },
                         )

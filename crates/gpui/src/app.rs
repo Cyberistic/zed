@@ -39,7 +39,7 @@ pub use test_app::*;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_context::*;
 #[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
+    not(all(target_arch = "wasm32", target_os = "unknown")),
     any(test, feature = "test-support")
 ))]
 pub use visual_test_context::*;
@@ -74,7 +74,7 @@ mod test_app;
 #[cfg(any(test, feature = "test-support"))]
 mod test_context;
 #[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
+    not(all(target_arch = "wasm32", target_os = "unknown")),
     any(test, feature = "test-support")
 ))]
 mod visual_test_context;
@@ -1319,6 +1319,16 @@ impl App {
     /// Unhide other applications at the platform level.
     pub fn unhide_other_apps(&self) {
         self.platform.unhide_other_apps();
+    }
+
+    /// Sets the label drawn on the application's dock icon, or clears it with
+    /// `None`.
+    ///
+    /// Only macOS implements it; elsewhere the call does nothing. A
+    /// menu-bar-only app (`ActivationPolicy::Accessory`) has no dock icon, so
+    /// the label has nowhere to appear.
+    pub fn set_dock_badge(&self, label: Option<&str>) {
+        self.platform.set_dock_badge(label);
     }
 
     /// Returns the list of currently active displays.

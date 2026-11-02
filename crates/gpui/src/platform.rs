@@ -18,7 +18,7 @@ mod threaded_dispatcher;
 mod test;
 
 #[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
+    not(all(target_arch = "wasm32", target_os = "unknown")),
     any(test, feature = "test-support")
 ))]
 mod visual_test;
@@ -94,7 +94,7 @@ pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream}
 pub use threaded_dispatcher::ThreadedDispatcher;
 
 #[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
+    not(all(target_arch = "wasm32", target_os = "unknown")),
     any(test, feature = "test-support")
 ))]
 pub use visual_test::VisualTestPlatform;
@@ -144,6 +144,11 @@ pub trait Platform: 'static {
     fn hide(&self);
     fn hide_other_apps(&self);
     fn unhide_other_apps(&self);
+
+    /// Sets the label drawn on the application's dock icon, or clears it.
+    ///
+    /// Only macOS implements it; the default is a no-op.
+    fn set_dock_badge(&self, _label: Option<&str>) {}
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
